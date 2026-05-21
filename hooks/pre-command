@@ -113,12 +113,13 @@ main() {
   broker_url="$(config_get "BROKER_URL")"
   [[ -n "$broker_url" ]] || fail "broker-url is required"
 
-  pull_request="${BUILDKITE_PULL_REQUEST:-}"
+  pull_request="$(config_get "PULL_REQUEST")"
+  pull_request="${pull_request:-${BUILDKITE_PULL_REQUEST:-}}"
   if [[ -z "$pull_request" || "$pull_request" == "false" ]]; then
-    fail "BUILDKITE_PULL_REQUEST must be set for gate verification"
+    fail "pull-request must be set (or BUILDKITE_PULL_REQUEST must be provided by the Buildkite agent)"
   fi
   if [[ ! "$pull_request" =~ ^[0-9]+$ ]]; then
-    fail "BUILDKITE_PULL_REQUEST must be numeric, got $pull_request"
+    fail "pull-request must be a positive integer, got $pull_request"
   fi
 
   configured_repository="$(config_get "REPOSITORY")"
