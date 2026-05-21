@@ -11,8 +11,7 @@ Broker:
 {"repository":"elastic/kibana","pull_request":12345}
 ```
 
-Access Broker is expected to authenticate the Buildkite OIDC token, read signed
-Buildkite claims such as `build_commit`, perform the configured checks, and
+Access Broker is expected to perform the configured checks, and
 return an allow verdict.
 
 ## Usage
@@ -25,7 +24,7 @@ steps:
     command: buildkite-agent pipeline upload .buildkite/pipeline.yml
     plugins:
       - elastic/access-broker-gate#v1.0.0:
-          broker-url: https://access-broker.example/gate
+          broker-url: https://access-broker.example/buildkite/gate
           repository: elastic/kibana
 ```
 

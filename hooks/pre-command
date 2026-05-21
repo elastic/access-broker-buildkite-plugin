@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-plugin_name="access-broker-gate"
+plugin_name="access-broker"
 default_audience="elastic-access-broker"
 default_oidc_claims="organization_slug,pipeline_id,pipeline_slug,build_id,build_branch,build_commit,cluster_id,queue_id,queue_key,step_key,job_id"
 default_oidc_lifetime="300"
@@ -14,44 +14,13 @@ log() {
 }
 
 fail() {
-  log "access-broker-gate: $*"
+  log "access-broker: $*"
   exit 1
 }
 
-plugin_get() {
-  local key="$1"
-  local value=""
-
-  if command -v buildkite-agent >/dev/null 2>&1; then
-    value="$(buildkite-agent plugin get "$key" 2>/dev/null || true)"
-  fi
-
-  printf '%s' "$value"
-}
-
-env_get() {
-  local name="$1"
-  printf '%s' "${!name:-}"
-}
-
 config_get() {
-  local key="$1"
-  local env_suffix="$2"
-  local value=""
-
-  value="$(plugin_get "$key")"
-  if [[ -n "$value" ]]; then
-    printf '%s' "$value"
-    return
-  fi
-
-  value="$(env_get "BUILDKITE_PLUGIN_ACCESS_BROKER_GATE_${env_suffix}")"
-  if [[ -n "$value" ]]; then
-    printf '%s' "$value"
-    return
-  fi
-
-  printf '%s' ""
+  local var_name="BUILDKITE_PLUGIN_ACCESS_BROKER_$1"
+  printf '%s' "${!var_name}"
 }
 
 normalize_repository() {
@@ -115,7 +84,7 @@ require_allow_verdict() {
     return
   fi
 
-  log "access-broker-gate: Access Broker did not return an allow verdict"
+  log "access-broker: Access Broker did not return an allow verdict"
   sed -n '1,40p' "$response_file" >&2
   exit 1
 }
@@ -141,7 +110,7 @@ main() {
   local response_file
   local status
 
-  broker_url="$(config_get "broker-url" "BROKER_URL")"
+  broker_url="$(config_get "BROKER_URL")"
   [[ -n "$broker_url" ]] || fail "broker-url is required"
 
   pull_request="${BUILDKITE_PULL_REQUEST:-}"
@@ -152,32 +121,32 @@ main() {
     fail "BUILDKITE_PULL_REQUEST must be numeric, got $pull_request"
   fi
 
-  configured_repository="$(config_get "repository" "REPOSITORY")"
+  configured_repository="$(config_get "REPOSITORY")"
   repository_source="${configured_repository:-${BUILDKITE_REPO:-}}"
   [[ -n "$repository_source" ]] || fail "repository is required when BUILDKITE_REPO is not set"
 
   repository="$(normalize_repository "$repository_source")" || fail "could not normalize repository $repository_source"
 
-  audience="$(config_get "audience" "AUDIENCE")"
+  audience="$(config_get "AUDIENCE")"
   audience="${audience:-$default_audience}"
 
-  oidc_claims="$(config_get "oidc-claims" "OIDC_CLAIMS")"
+  oidc_claims="$(config_get "OIDC_CLAIMS")"
   oidc_claims="${oidc_claims:-$default_oidc_claims}"
 
-  oidc_lifetime="$(config_get "oidc-lifetime" "OIDC_LIFETIME")"
+  oidc_lifetime="$(config_get "OIDC_LIFETIME")"
   oidc_lifetime="${oidc_lifetime:-$default_oidc_lifetime}"
   if [[ ! "$oidc_lifetime" =~ ^[0-9]+$ || "$oidc_lifetime" -le 0 ]]; then
     fail "oidc-lifetime must be a positive integer"
   fi
 
-  curl_timeout_seconds="$(config_get "curl-timeout-seconds" "CURL_TIMEOUT_SECONDS")"
+  curl_timeout_seconds="$(config_get "CURL_TIMEOUT_SECONDS")"
   curl_timeout_seconds="${curl_timeout_seconds:-$default_curl_timeout_seconds}"
   if [[ ! "$curl_timeout_seconds" =~ ^[0-9]+$ || "$curl_timeout_seconds" -le 0 ]]; then
     fail "curl-timeout-seconds must be a positive integer"
   fi
 
   log "--- :lock: Verifying pull request gate"
-  log "access-broker-gate: repository=$repository pull_request=$pull_request"
+  log "access-broker: repository=$repository pull_request=$pull_request"
 
   token="$(request_oidc_token "$audience" "$oidc_claims" "$oidc_lifetime")"
   [[ -n "$token" ]] || fail "failed to request Buildkite OIDC token"
@@ -188,19 +157,19 @@ main() {
   trap 'rm -f "${access_broker_gate_response_file:-}"' EXIT
 
   if ! status="$(post_verification_request "$broker_url" "$token" "$request_body" "$curl_timeout_seconds" "$response_file")"; then
-    log "access-broker-gate: Access Broker request failed"
+    log "access-broker: Access Broker request failed"
     sed -n '1,40p' "$response_file" >&2 || true
     exit 1
   fi
 
   if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
-    log "access-broker-gate: Access Broker returned HTTP $status"
+    log "access-broker: Access Broker returned HTTP $status"
     sed -n '1,40p' "$response_file" >&2
     exit 1
   fi
 
   require_allow_verdict "$response_file"
-  log "access-broker-gate: allow verdict received"
+  log "access-broker: allow verdict received"
 }
 
 main "$@"
