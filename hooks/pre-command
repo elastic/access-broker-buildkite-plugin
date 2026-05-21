@@ -101,6 +101,7 @@ main() {
   local repository_source
   local repository
   local pull_request
+  local branch
   local audience
   local oidc_claims
   local oidc_lifetime
@@ -113,19 +114,9 @@ main() {
   broker_url="$(config_get "BROKER_URL")"
   [[ -n "$broker_url" ]] || fail "broker-url is required"
 
-  pull_request="${BUILDKITE_PULL_REQUEST:-}"
-  if [[ -z "$pull_request" || "$pull_request" == "false" ]]; then
-    log "access-broker: not a pull request build, skipping gate"
-    exit 0
-  fi
-  if [[ ! "$pull_request" =~ ^[0-9]+$ ]]; then
-    fail "BUILDKITE_PULL_REQUEST must be a positive integer, got $pull_request"
-  fi
-
   configured_repository="$(config_get "REPOSITORY")"
   repository_source="${configured_repository:-${BUILDKITE_REPO:-}}"
   [[ -n "$repository_source" ]] || fail "repository is required when BUILDKITE_REPO is not set"
-
   repository="$(normalize_repository "$repository_source")" || fail "could not normalize repository $repository_source"
 
   audience="$(config_get "AUDIENCE")"
@@ -146,13 +137,33 @@ main() {
     fail "curl-timeout-seconds must be a positive integer"
   fi
 
-  log "--- :lock: Verifying pull request gate"
-  log "access-broker: repository=$repository pull_request=$pull_request"
+  pull_request="${BUILDKITE_PULL_REQUEST:-}"
+  if [[ -z "$pull_request" || "$pull_request" == "false" ]]; then
+    branch="${BUILDKITE_BRANCH:-}"
+    if [[ -z "$branch" ]]; then
+      log "access-broker: BUILDKITE_BRANCH is not set, skipping gate"
+      exit 0
+    fi
+    # Derive the head owner from BUILDKITE_REPO so fork PRs are found correctly.
+    # For fork builds BUILDKITE_REPO points to the fork, not the base repository.
+    local head_repo head_owner
+    head_repo="$(normalize_repository "${BUILDKITE_REPO:-}")" || head_repo=""
+    head_owner="${head_repo%%/*}"
+    log "--- :lock: Verifying pull request gate"
+    log "access-broker: repository=$repository branch=$branch head_owner=${head_owner:-<base>}"
+    request_body="$(printf '{"repository":"%s","branch":"%s","head_owner":"%s"}' "$repository" "$branch" "$head_owner")"
+  else
+    if [[ ! "$pull_request" =~ ^[0-9]+$ ]]; then
+      fail "BUILDKITE_PULL_REQUEST must be a positive integer, got $pull_request"
+    fi
+    log "--- :lock: Verifying pull request gate"
+    log "access-broker: repository=$repository pull_request=$pull_request"
+    request_body="$(printf '{"repository":"%s","pull_request":%s}' "$repository" "$pull_request")"
+  fi
 
   token="$(request_oidc_token "$audience" "$oidc_claims" "$oidc_lifetime")"
   [[ -n "$token" ]] || fail "failed to request Buildkite OIDC token"
 
-  request_body="$(printf '{"repository":"%s","pull_request":%s}' "$repository" "$pull_request")"
   response_file="$(mktemp "${TMPDIR:-/tmp}/${plugin_name}.response.XXXXXX")"
   access_broker_gate_response_file="$response_file"
   trap 'rm -f "${access_broker_gate_response_file:-}"' EXIT
