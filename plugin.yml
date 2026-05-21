@@ -1,0 +1,30 @@
+name: Access Broker Gate
+description: Verifies a pull request CI run with Access Broker before continuing a Buildkite step.
+author: https://github.com/elastic
+requirements:
+  - bash
+  - buildkite-agent
+  - curl
+configuration:
+  properties:
+    broker-url:
+      type: string
+      description: Full Access Broker gate endpoint URL.
+    repository:
+      type: string
+      description: Repository slug to send to Access Broker, for example elastic/kibana. Defaults to BUILDKITE_REPO.
+    audience:
+      type: string
+      description: OIDC token audience expected by Access Broker.
+    oidc-claims:
+      type: string
+      description: Comma-separated optional Buildkite OIDC claims to include.
+    oidc-lifetime:
+      type: number
+      description: Requested OIDC token lifetime in seconds.
+    curl-timeout-seconds:
+      type: number
+      description: Maximum time for the Access Broker HTTP request.
+  required:
+    - broker-url
+  additionalProperties: false
