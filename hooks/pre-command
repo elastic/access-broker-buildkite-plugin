@@ -2,12 +2,10 @@
 
 set -euo pipefail
 
-plugin_name="access-broker"
 default_audience="elastic-access-broker"
 default_oidc_claims="organization_slug,pipeline_id,pipeline_slug,build_id,build_branch,build_commit,cluster_id,queue_id,queue_key,step_key,job_id"
 default_oidc_lifetime="300"
 default_curl_timeout_seconds="30"
-access_broker_gate_response_file=""
 
 log() {
   printf '%s\n' "$*" >&2
@@ -19,164 +17,99 @@ fail() {
 }
 
 config_get() {
-  local var_name="BUILDKITE_PLUGIN_ACCESS_BROKER_$1"
-  printf '%s' "${!var_name:-}"
+  local var="BUILDKITE_PLUGIN_ACCESS_BROKER_$1"
+  printf '%s' "${!var:-}"
 }
 
 normalize_repository() {
   local raw="$1"
-
   raw="${raw%.git}"
   raw="${raw#git@github.com:}"
   raw="${raw#ssh://git@github.com/}"
   raw="${raw#https://github.com/}"
   raw="${raw#http://github.com/}"
   raw="${raw#git://github.com/}"
-
-  if [[ ! "$raw" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-    return 1
-  fi
-
+  [[ "$raw" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
   printf '%s' "$raw"
 }
 
-require_command() {
-  local command_name="$1"
-  if ! command -v "$command_name" >/dev/null 2>&1; then
-    fail "required command not found: $command_name"
-  fi
-}
-
-request_oidc_token() {
-  local audience="$1"
-  local claims="$2"
-  local lifetime="$3"
-
-  buildkite-agent oidc request-token \
-    --audience "$audience" \
-    --lifetime "$lifetime" \
-    --claim "$claims"
-}
-
-post_verification_request() {
-  local broker_url="$1"
-  local token="$2"
-  local body="$3"
-  local timeout_seconds="$4"
-  local response_file="$5"
-
-  curl \
-    --silent \
-    --show-error \
-    --max-time "$timeout_seconds" \
-    --output "$response_file" \
-    --write-out '%{http_code}' \
-    --header "Authorization: Bearer $token" \
-    --header "Content-Type: application/json" \
-    --data "$body" \
-    "$broker_url"
-}
-
-require_allow_verdict() {
-  local response_file="$1"
-
-  if grep -Eq '"verdict"[[:space:]]*:[[:space:]]*"allow"' "$response_file"; then
-    return
-  fi
-
-  log "access-broker: Access Broker did not return an allow verdict"
-  sed -n '1,40p' "$response_file" >&2
-  exit 1
-}
-
 main() {
-  require_command buildkite-agent
-  require_command curl
-  require_command grep
-  require_command sed
-  require_command mktemp
+  command -v buildkite-agent >/dev/null || fail "buildkite-agent not found"
+  command -v curl >/dev/null || fail "curl not found"
 
   local broker_url
-  local configured_repository
-  local repository_source
-  local repository
-  local pull_request
-  local branch
-  local audience
-  local oidc_claims
-  local oidc_lifetime
-  local curl_timeout_seconds
-  local token
-  local request_body
-  local response_file
-  local status
-
-  broker_url="$(config_get "BROKER_URL")"
+  broker_url="$(config_get BROKER_URL)"
   [[ -n "$broker_url" ]] || fail "broker-url is required"
 
-  configured_repository="$(config_get "REPOSITORY")"
-  repository_source="${configured_repository:-${BUILDKITE_REPO:-}}"
-  [[ -n "$repository_source" ]] || fail "repository is required when BUILDKITE_REPO is not set"
-  repository="$(normalize_repository "$repository_source")" || fail "could not normalize repository $repository_source"
+  local repo_source
+  repo_source="$(config_get REPOSITORY)"
+  repo_source="${repo_source:-${BUILDKITE_REPO:-}}"
+  [[ -n "$repo_source" ]] || fail "repository is required when BUILDKITE_REPO is not set"
 
-  audience="$(config_get "AUDIENCE")"
+  local repository
+  repository="$(normalize_repository "$repo_source")" || fail "could not normalize repository: $repo_source"
+
+  local audience
+  audience="$(config_get AUDIENCE)"
   audience="${audience:-$default_audience}"
 
-  oidc_claims="$(config_get "OIDC_CLAIMS")"
+  local oidc_claims
+  oidc_claims="$(config_get OIDC_CLAIMS)"
   oidc_claims="${oidc_claims:-$default_oidc_claims}"
 
-  oidc_lifetime="$(config_get "OIDC_LIFETIME")"
+  local oidc_lifetime
+  oidc_lifetime="$(config_get OIDC_LIFETIME)"
   oidc_lifetime="${oidc_lifetime:-$default_oidc_lifetime}"
-  if [[ ! "$oidc_lifetime" =~ ^[0-9]+$ || "$oidc_lifetime" -le 0 ]]; then
-    fail "oidc-lifetime must be a positive integer"
-  fi
+  [[ "$oidc_lifetime" =~ ^[1-9][0-9]*$ ]] || fail "oidc-lifetime must be a positive integer"
 
-  curl_timeout_seconds="$(config_get "CURL_TIMEOUT_SECONDS")"
+  local curl_timeout_seconds
+  curl_timeout_seconds="$(config_get CURL_TIMEOUT_SECONDS)"
   curl_timeout_seconds="${curl_timeout_seconds:-$default_curl_timeout_seconds}"
-  if [[ ! "$curl_timeout_seconds" =~ ^[0-9]+$ || "$curl_timeout_seconds" -le 0 ]]; then
-    fail "curl-timeout-seconds must be a positive integer"
-  fi
+  [[ "$curl_timeout_seconds" =~ ^[1-9][0-9]*$ ]] || fail "curl-timeout-seconds must be a positive integer"
 
-  pull_request="${BUILDKITE_PULL_REQUEST:-}"
+  local request_body
+  local pull_request="${BUILDKITE_PULL_REQUEST:-}"
+  log "--- :lock: Verifying pull request gate"
   if [[ -z "$pull_request" || "$pull_request" == "false" ]]; then
-    branch="${BUILDKITE_BRANCH:-}"
+    local branch="${BUILDKITE_BRANCH:-}"
     if [[ -z "$branch" ]]; then
       log "access-broker: BUILDKITE_BRANCH is not set, skipping gate"
       exit 0
     fi
-    log "--- :lock: Verifying pull request gate"
     log "access-broker: repository=$repository branch=$branch"
     request_body="$(printf '{"repository":"%s","branch":"%s"}' "$repository" "$branch")"
   else
-    if [[ ! "$pull_request" =~ ^[0-9]+$ ]]; then
-      fail "BUILDKITE_PULL_REQUEST must be a positive integer, got $pull_request"
-    fi
-    log "--- :lock: Verifying pull request gate"
+    [[ "$pull_request" =~ ^[0-9]+$ ]] || fail "BUILDKITE_PULL_REQUEST must be a positive integer, got $pull_request"
     log "access-broker: repository=$repository pull_request=$pull_request"
     request_body="$(printf '{"repository":"%s","pull_request":%s}' "$repository" "$pull_request")"
   fi
 
-  token="$(request_oidc_token "$audience" "$oidc_claims" "$oidc_lifetime")"
-  [[ -n "$token" ]] || fail "failed to request Buildkite OIDC token"
+  local token
+  token="$(buildkite-agent oidc request-token \
+    --audience "$audience" \
+    --lifetime "$oidc_lifetime" \
+    --claim "$oidc_claims")"
 
-  response_file="$(mktemp "${TMPDIR:-/tmp}/${plugin_name}.response.XXXXXX")"
-  access_broker_gate_response_file="$response_file"
-  trap 'rm -f "${access_broker_gate_response_file:-}"' EXIT
+  local response_file
+  response_file="$(mktemp)"
+  trap "rm -f '$response_file'" EXIT
 
-  if ! status="$(post_verification_request "$broker_url" "$token" "$request_body" "$curl_timeout_seconds" "$response_file")"; then
-    log "access-broker: Access Broker request failed"
-    sed -n '1,40p' "$response_file" >&2 || true
-    exit 1
-  fi
+  local status
+  status="$(curl \
+    --silent \
+    --show-error \
+    --max-time "$curl_timeout_seconds" \
+    --output "$response_file" \
+    --write-out '%{http_code}' \
+    --header "Authorization: Bearer $token" \
+    --header "Content-Type: application/json" \
+    --data "$request_body" \
+    "$broker_url")" || { log "access-broker: $(cat "$response_file")"; exit 1; }
 
-  if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
-    log "access-broker: Access Broker returned HTTP $status"
-    sed -n '1,40p' "$response_file" >&2
-    exit 1
-  fi
+  [[ "$status" =~ ^2 ]] || { log "access-broker: HTTP $status — $(cat "$response_file")"; exit 1; }
 
-  require_allow_verdict "$response_file"
-  log "access-broker: allow verdict received"
+  grep -q '"verdict":"allow"' "$response_file" || { log "access-broker: $(cat "$response_file")"; exit 1; }
+  log "access-broker: $(cat "$response_file")"
 }
 
 main "$@"
