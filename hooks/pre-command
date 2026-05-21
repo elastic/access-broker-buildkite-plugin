@@ -144,14 +144,9 @@ main() {
       log "access-broker: BUILDKITE_BRANCH is not set, skipping gate"
       exit 0
     fi
-    # Derive the head owner from BUILDKITE_REPO so fork PRs are found correctly.
-    # For fork builds BUILDKITE_REPO points to the fork, not the base repository.
-    local head_repo head_owner
-    head_repo="$(normalize_repository "${BUILDKITE_REPO:-}")" || head_repo=""
-    head_owner="${head_repo%%/*}"
     log "--- :lock: Verifying pull request gate"
-    log "access-broker: repository=$repository branch=$branch head_owner=${head_owner:-<base>}"
-    request_body="$(printf '{"repository":"%s","branch":"%s","head_owner":"%s"}' "$repository" "$branch" "$head_owner")"
+    log "access-broker: repository=$repository branch=$branch"
+    request_body="$(printf '{"repository":"%s","branch":"%s"}' "$repository" "$branch")"
   else
     if [[ ! "$pull_request" =~ ^[0-9]+$ ]]; then
       fail "BUILDKITE_PULL_REQUEST must be a positive integer, got $pull_request"
