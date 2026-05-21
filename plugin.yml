@@ -10,9 +10,6 @@ configuration:
     broker-url:
       type: string
       description: Full Access Broker gate endpoint URL.
-    pull-request:
-      type: number
-      description: Pull request number to verify. Defaults to BUILDKITE_PULL_REQUEST.
     repository:
       type: string
       description: Repository slug to send to Access Broker, for example elastic/kibana. Defaults to BUILDKITE_REPO.
